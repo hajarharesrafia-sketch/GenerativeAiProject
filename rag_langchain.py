@@ -16,7 +16,7 @@ from langchain_community.vectorstores import FAISS
 # =========================
 DATA_DIR = Path("Data")
 FAISS_DIR = Path("faiss_index")
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 SUPPORTED_EXTENSIONS = {".pdf"}
@@ -106,3 +106,38 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+from langchain_classic.chains import RetrievalQA
+from transformers import pipeline as hf_pipeline
+from langchain_community.llms import HuggingFacePipeline
+
+
+def ask_question(query: str) -> str:
+    """Pose une question au système RAG."""
+
+    # Charger embeddings
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+
+    # Charger index FAISS
+    db = FAISS.load_local(
+    str(FAISS_DIR),
+    embeddings,
+    allow_dangerous_deserialization=True
+)
+
+    retriever = db.as_retriever()
+
+    # Modèle LLM
+    pipe = hf_pipeline("text-generation", model="gpt2")
+
+    llm = HuggingFacePipeline(pipeline=pipe)
+
+    # Chaîne RAG
+    qa = RetrievalQA.from_chain_type(
+        llm=llm,
+        retriever=retriever
+    )
+
+    result = qa.run(query)
+
+    return result
