@@ -1,79 +1,51 @@
 """
 tools.py — Outils pour l'agent juridique (Partie 2)
-Outils : Recherche web (Tavily), Calcul de délais juridiques, API Légifrance (mode démo)
+Outils : Recherche web (Tavily), Calcul de délais juridiques, Légifrance (mode démo)
+Style inspiré du notebook du professeur
 """
 
 from __future__ import annotations
 
 import os
+import re
 import requests
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
-from langchain.tools import tool
+from langchain.tools import Tool
 
 
 # ===========================================================
 # OUTIL 1 : Recherche web juridique (Tavily)
 # ===========================================================
 
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-
-
-@tool
 def web_search_juridique(query: str) -> str:
-    """
-    Effectue une recherche web pour trouver des informations juridiques récentes :
-    actualités légales, jurisprudences, nouvelles lois, décrets, articles de droit.
-    Utilise cet outil quand la question porte sur des informations qui ne sont
-    pas dans les documents internes ou qui nécessitent une mise à jour récente.
-    Exemples : 'jurisprudence licenciement abusif 2024', 'nouveau SMIC 2025'.
-    Input : une requête de recherche en français.
-    """
-    if not TAVILY_API_KEY:
+    """Recherche web pour trouver des informations juridiques récentes."""
+    from tavily import TavilyClient
+
+    api_key = os.getenv("TAVILY_API_KEY", "")
+    if not api_key:
         return (
             "[Mode démo] Recherche web désactivée. "
-            "Ajoutez TAVILY_API_KEY dans votre .env pour activer cet outil.\n"
-            f"Requête tentée : '{query}'\n"
-            "Résultat simulé : Pour cette question, consultez le site service-public.fr "
-            "ou legifrance.gouv.fr pour des informations à jour."
+            f"Ajoutez TAVILY_API_KEY dans votre .env.\n"
+            f"Requête tentée : '{query}'"
         )
 
-    url = "https://api.tavily.com/search"
-    payload = {
-        "api_key": TAVILY_API_KEY,
-        "query": query,
-        "search_depth": "basic",
-        "max_results": 3,
-        "include_answer": True,
-        "include_domains": [
-            "legifrance.gouv.fr",
-            "service-public.fr",
-            "travail-emploi.gouv.fr",
-            "juritravail.com",
-            "droit-travail-france.fr",
-        ],
-    }
-
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        client = TavilyClient(api_key=api_key)
+        res = client.search(query=query, search_depth="basic", max_results=3)
+        results = res.get("results", [])
 
-        if data.get("answer"):
-            return f"Résultat : {data['answer']}"
-
-        results = data.get("results", [])
         if not results:
-            return "Aucun résultat trouvé pour cette requête juridique."
+            return "Aucun résultat trouvé."
 
-        summaries = []
+        lines = []
         for r in results[:3]:
             title = r.get("title", "Sans titre")
             content = r.get("content", "")[:400]
-            url_source = r.get("url", "")
-            summaries.append(f"• {title}\n  {content}\n  Source : {url_source}")
+            url = r.get("url", "")
+            lines.append(f"- {title}\n  {content}\n  {url}")
 
-        return "\n\n".join(summaries)
+        return "\n\n".join(lines)
 
     except Exception as e:
         return f"Erreur lors de la recherche web : {e}"
@@ -83,34 +55,17 @@ def web_search_juridique(query: str) -> str:
 # OUTIL 2 : Calcul de délais juridiques
 # ===========================================================
 
-@tool
 def calcul_delai_juridique(description: str) -> str:
-    """
-    Calcule des délais juridiques à partir d'une date de départ et d'une durée.
-    Gère les délais en jours, semaines, mois ou années.
-    Utilise cet outil pour toute question sur des échéances légales :
-    préavis, délais de recours, périodes d'essai, ancienneté, congés, etc.
-
-    Format d'input attendu (en langage naturel) :
-    - 'préavis de 2 mois à partir du 15/04/2025'
-    - 'délai de recours de 2 mois depuis le 01/03/2025'
-    - 'période d essai de 3 mois à partir du 10/01/2025'
-    - 'ancienneté de 3 ans depuis le 05/06/2022'
-    - 'délai de 30 jours à partir du 20/04/2025'
-    """
-    import re
-
+    """Calcule des délais juridiques à partir d'une date et d'une durée."""
     texte = description.lower()
 
-    # --- Extraction de la date de départ ---
     date_pattern = r'(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2,4})'
     date_match = re.search(date_pattern, texte)
 
     if not date_match:
         return (
-            "❌ Impossible de trouver une date dans votre demande.\n"
-            "Veuillez préciser une date au format JJ/MM/AAAA.\n"
-            "Exemple : 'préavis de 2 mois à partir du 15/04/2025'"
+            "❌ Impossible de trouver une date. "
+            "Format attendu : 'préavis de 2 mois à partir du 15/04/2025'"
         )
 
     jour, mois, annee = date_match.groups()
@@ -123,20 +78,19 @@ def calcul_delai_juridique(description: str) -> str:
     except ValueError:
         return "❌ Date invalide. Vérifiez le format JJ/MM/AAAA."
 
-    # --- Extraction de la durée et unité ---
-    duree_match = re.search(r'(\d+)\s*(jour|jours|semaine|semaines|mois|an|ans|année|années)', texte)
+    duree_match = re.search(
+        r'(\d+)\s*(jour|jours|semaine|semaines|mois|an|ans|année|années)', texte
+    )
 
     if not duree_match:
         return (
-            "❌ Impossible de trouver la durée dans votre demande.\n"
-            "Précisez une durée en jours, semaines, mois ou ans.\n"
+            "❌ Impossible de trouver la durée. "
             "Exemple : 'délai de 30 jours à partir du 20/04/2025'"
         )
 
     quantite = int(duree_match.group(1))
     unite = duree_match.group(2)
 
-    # --- Calcul de la date de fin ---
     if "jour" in unite:
         date_fin = date_debut + timedelta(days=quantite)
         duree_label = f"{quantite} jour(s)"
@@ -146,11 +100,10 @@ def calcul_delai_juridique(description: str) -> str:
     elif "mois" in unite:
         date_fin = date_debut + relativedelta(months=quantite)
         duree_label = f"{quantite} mois"
-    else:  # ans / années
+    else:
         date_fin = date_debut + relativedelta(years=quantite)
         duree_label = f"{quantite} an(s)"
 
-    # --- Résultat ---
     jours_restants = (date_fin - datetime.now()).days
 
     if jours_restants > 0:
@@ -171,7 +124,7 @@ def calcul_delai_juridique(description: str) -> str:
 
 
 # ===========================================================
-# OUTIL 3 : Recherche dans Légifrance (mode démo)
+# OUTIL 3 : Recherche Légifrance (mode démo)
 # ===========================================================
 
 LEGIFRANCE_DEMO_DATA = {
@@ -188,70 +141,66 @@ LEGIFRANCE_DEMO_DATA = {
         "titre": "Article L1234-1 — Code du travail",
         "resume": (
             "Le préavis est de 1 mois pour une ancienneté entre 6 mois et 2 ans, "
-            "et de 2 mois pour une ancienneté supérieure à 2 ans. "
-            "Des dispositions conventionnelles peuvent prévoir des durées plus longues."
+            "et de 2 mois pour une ancienneté supérieure à 2 ans."
         ),
         "url": "https://www.legifrance.gouv.fr/codes/article_lc/LEGIARTI000006901248",
     },
-    "congés payés": {
+    "conges": {
         "titre": "Article L3141-3 — Code du travail",
         "resume": (
-            "Le salarié a droit à un congé de 2,5 jours ouvrables par mois de travail "
-            "effectif chez le même employeur, soit 30 jours ouvrables (5 semaines) par an."
+            "Le salarié a droit à 2,5 jours ouvrables par mois de travail effectif, "
+            "soit 30 jours ouvrables (5 semaines) par an."
         ),
         "url": "https://www.legifrance.gouv.fr/codes/article_lc/LEGIARTI000033020420",
     },
     "salaire": {
         "titre": "Article L3231-2 — Code du travail (SMIC)",
         "resume": (
-            "Tout salarié perçoit une rémunération au moins égale au SMIC. "
-            "Le SMIC est revalorisé au minimum chaque année au 1er janvier. "
-            "Il peut également être revalorisé en cours d'année si l'inflation dépasse 2%."
+            "Tout salarié perçoit une rémunération au moins égale au SMIC, "
+            "revalorisé au minimum chaque année au 1er janvier."
         ),
         "url": "https://www.legifrance.gouv.fr/codes/article_lc/LEGIARTI000006902626",
     },
-    "période d'essai": {
+    "periode d'essai": {
         "titre": "Article L1221-19 — Code du travail",
         "resume": (
             "La période d'essai est de 2 mois pour les ouvriers et employés, "
-            "3 mois pour les agents de maîtrise et techniciens, "
-            "4 mois pour les cadres. Elle peut être renouvelée une fois si un accord de branche le prévoit."
+            "3 mois pour les agents de maîtrise, 4 mois pour les cadres."
         ),
         "url": "https://www.legifrance.gouv.fr/codes/article_lc/LEGIARTI000019071188",
+    },
+    "cddu": {
+        "titre": "Article L1242-2 — Code du travail (CDDU)",
+        "resume": (
+            "Dans le spectacle, il est possible de conclure des contrats à durée déterminée "
+            "dits d'usage pour certains emplois par nature temporaires."
+        ),
+        "url": "https://www.legifrance.gouv.fr/codes/article_lc/LEGIARTI000006901208",
     },
 }
 
 
-@tool
 def recherche_legifrance(query: str) -> str:
-    """
-    Recherche des articles de loi et textes juridiques officiels dans Légifrance.
-    Utilise cet outil pour trouver les références légales précises du Code du travail
-    ou d'autres textes de loi français (articles, décrets, jurisprudences officielles).
-    Exemples : 'article sur le licenciement', 'règles sur les congés payés',
-    'durée période d essai cadre', 'calcul préavis'.
-    Input : une requête juridique en français.
-    """
-    LEGIFRANCE_CLIENT_ID = os.getenv("LEGIFRANCE_CLIENT_ID", "")
-    LEGIFRANCE_CLIENT_SECRET = os.getenv("LEGIFRANCE_CLIENT_SECRET", "")
+    """Recherche des articles de loi dans Légifrance."""
+    client_id = os.getenv("LEGIFRANCE_CLIENT_ID", "")
+    client_secret = os.getenv("LEGIFRANCE_CLIENT_SECRET", "")
 
-    # --- Mode réel (si credentials disponibles) ---
-    if LEGIFRANCE_CLIENT_ID and LEGIFRANCE_CLIENT_SECRET:
+    if client_id and client_secret:
         try:
-            token_response = requests.post(
+            token_resp = requests.post(
                 "https://oauth.piste.gouv.fr/api/oauth/token",
                 data={
                     "grant_type": "client_credentials",
-                    "client_id": LEGIFRANCE_CLIENT_ID,
-                    "client_secret": LEGIFRANCE_CLIENT_SECRET,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
                     "scope": "openid",
                 },
                 timeout=10,
             )
-            token_response.raise_for_status()
-            access_token = token_response.json()["access_token"]
+            token_resp.raise_for_status()
+            access_token = token_resp.json()["access_token"]
 
-            search_response = requests.post(
+            search_resp = requests.post(
                 "https://api.piste.gouv.fr/dila/legifrance/lf-engine-app/search",
                 headers={
                     "Authorization": f"Bearer {access_token}",
@@ -263,32 +212,28 @@ def recherche_legifrance(query: str) -> str:
                         "pageNumber": 1,
                         "pageSize": 3,
                         "sort": "PERTINENCE",
-                        "typePagination": "DEFAUT",
                     },
                     "fond": "CODE_DATE",
                 },
                 timeout=10,
             )
-            search_response.raise_for_status()
-            data = search_response.json()
+            search_resp.raise_for_status()
+            results = search_resp.json().get("results", [])
 
-            results = data.get("results", [])
             if not results:
-                return f"Aucun article trouvé dans Légifrance pour : '{query}'."
+                return f"Aucun article trouvé pour : '{query}'."
 
-            output = [f"📚 Résultats Légifrance pour : '{query}'\n"]
+            output = []
             for r in results[:3]:
                 titre = r.get("titre", "Sans titre")
                 texte = r.get("extract", "")[:400]
-                lien = r.get("cid", "")
-                output.append(f"• {titre}\n  {texte}\n  🔗 legifrance.gouv.fr/codes/id/{lien}")
-
+                output.append(f"📄 {titre}\n{texte}")
             return "\n\n".join(output)
 
         except Exception as e:
             return f"Erreur API Légifrance : {e}"
 
-    # --- Mode démo ---
+    # Mode démo
     query_lower = query.lower()
     for keyword, data in LEGIFRANCE_DEMO_DATA.items():
         if keyword in query_lower:
@@ -297,18 +242,52 @@ def recherche_legifrance(query: str) -> str:
                 f"──────────────────────────────────\n"
                 f"📄 {data['titre']}\n\n"
                 f"{data['resume']}\n\n"
-                f"🔗 Source officielle : {data['url']}\n\n"
-                f"⚠️ Mode démonstration — Ajoutez LEGIFRANCE_CLIENT_ID et "
-                f"LEGIFRANCE_CLIENT_SECRET dans votre .env pour des résultats réels."
+                f"🔗 {data['url']}\n\n"
+                f"⚠️ Mode démo — Ajoutez LEGIFRANCE_CLIENT_ID et LEGIFRANCE_CLIENT_SECRET "
+                f"dans votre .env pour des résultats réels."
             )
 
     return (
-        f"📚 [Mode démo] Aucune donnée simulée pour '{query}'.\n"
-        f"En mode réel, cet outil interrogerait l'API officielle Légifrance.\n"
-        f"Thèmes disponibles en démo : licenciement, préavis, congés payés, salaire, période d'essai.\n"
-        f"🔗 Consultez directement : https://www.legifrance.gouv.fr"
+        f"📚 [Mode démo] Aucune donnée pour '{query}'.\n"
+        f"Thèmes disponibles : licenciement, préavis, congés, salaire, "
+        f"période d'essai, CDDU.\n"
+        f"🔗 https://www.legifrance.gouv.fr"
     )
 
 
-# Liste exportée pour l'agent
-ALL_TOOLS = [web_search_juridique, calcul_delai_juridique, recherche_legifrance]
+# ===========================================================
+# Liste des outils au format LangChain (style du prof)
+# ===========================================================
+
+ALL_TOOLS = [
+    Tool(
+        name="web_search_juridique",
+        func=web_search_juridique,
+        description=(
+            "Recherche web pour trouver des informations juridiques récentes : "
+            "actualités légales, jurisprudences, nouvelles lois, SMIC actuel. "
+            "Utilise cet outil quand la question nécessite des informations récentes "
+            "ou qui ne sont pas dans les documents internes."
+        ),
+    ),
+    Tool(
+        name="calcul_delai_juridique",
+        func=calcul_delai_juridique,
+        description=(
+            "Calcule des délais juridiques à partir d'une date et d'une durée. "
+            "Utilise cet outil pour : préavis, périodes d'essai, délais de recours, "
+            "ancienneté, congés. "
+            "Exemple d'input : 'préavis de 2 mois à partir du 15/04/2025'"
+        ),
+    ),
+    Tool(
+        name="recherche_legifrance",
+        func=recherche_legifrance,
+        description=(
+            "Recherche des articles de loi officiels dans Légifrance (Code du travail). "
+            "Utilise cet outil pour trouver des références légales précises : "
+            "articles sur le licenciement, les congés payés, le SMIC, la période d'essai, "
+            "le CDDU dans le spectacle, etc."
+        ),
+    ),
+]
