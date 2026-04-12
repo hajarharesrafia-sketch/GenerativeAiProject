@@ -14,3 +14,7 @@ torch
 pymupdf
 
 chainlit>=2.11,<3
+
+python-dateutil
+requests
+tavily-python
