@@ -13,8 +13,10 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
-from langchain.tools import Tool
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import PromptTemplate
+from langchain_core.tools import Tool
 from langchain_classic.agents import initialize_agent, AgentType
 
 from tools import ALL_TOOLS
@@ -55,16 +57,21 @@ def load_rag_tool() -> Tool:
     )
     retriever = db.as_retriever(search_kwargs={"k": 4})
 
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=retriever,
-        return_source_documents=False,
+    prompt = PromptTemplate.from_template(
+        "Réponds à la question en français en te basant sur le contexte.\n"
+        "Contexte: {context}\nQuestion: {question}\nRéponse:"
+    )
+
+    qa_chain = (
+        {"context": retriever, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
     )
 
     return Tool(
         name="recherche_documents_internes",
-        func=lambda q: qa_chain.run(q),
+        func=lambda q: qa_chain.invoke(q),
         description=(
             "Utilise cet outil pour répondre aux questions basées sur les documents "
             "juridiques internes : droits des salariés, convention collective, "
@@ -75,7 +82,7 @@ def load_rag_tool() -> Tool:
 
 
 # ===========================================================
-# Construction de l'agent (style du prof)
+# Construction de l'agent
 # ===========================================================
 
 def build_agent():

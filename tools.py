@@ -11,7 +11,7 @@ import re
 import requests
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
-from langchain.tools import Tool
+from langchain_core.tools import Tool
 
 
 # ===========================================================
