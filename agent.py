@@ -1,8 +1,3 @@
-"""
-agent.py — Agent LangChain avec Groq + outils juridiques (Partie 2)
-Style inspiré du notebook du professeur
-Utilise initialize_agent + Groq (Llama3) au lieu de GPT-2
-"""
 
 from __future__ import annotations
 
