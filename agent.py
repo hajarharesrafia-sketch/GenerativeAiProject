@@ -1,3 +1,8 @@
+"""
+agent.py — Agent LangChain avec Groq + outils juridiques (Partie 2)
+Style inspiré du notebook du professeur
+Utilise initialize_agent + Groq (Llama3)
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
-from langchain_core.tools import Tool
+from langchain.tools import Tool
+from langchain.memory import ConversationBufferMemory        
 from langchain_classic.agents import initialize_agent, AgentType
 
 from tools import ALL_TOOLS
@@ -32,7 +38,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ===========================================================
 
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
+    model="llama3-3b-70b-versatile",
     temperature=0,
     groq_api_key=GROQ_API_KEY,
 )
@@ -81,17 +87,24 @@ def load_rag_tool() -> Tool:
 # ===========================================================
 
 def build_agent():
-    """Construit et retourne l'agent."""
+    """Construit et retourne l'agent avec mémoire conversationnelle."""
     print("[INFO] Chargement de l'index FAISS (RAG)...")
     rag_tool = load_rag_tool()
 
     tools = [rag_tool] + ALL_TOOLS
 
+    # ✅ AJOUT : Mémoire conversationnelle
+    memory = ConversationBufferMemory(
+        memory_key="chat_history",
+        return_messages=True
+    )
+
     print("[INFO] Création de l'agent...")
     agent = initialize_agent(
         tools=tools,
         llm=llm,
-        agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        agent_type=AgentType.CONVERSATIONAL_REACT_DESCRIPTION,  
+        memory=memory,                                          
         verbose=True,
         handle_parsing_errors=True,
     )
