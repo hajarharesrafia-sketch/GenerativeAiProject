@@ -13,17 +13,7 @@ agent_executor = build_agent()
 @cl.on_chat_start
 async def on_chat_start():
     await cl.Message(
-        content=(
-            "⚖️ **Assistant Juridique Intelligent**\n\n"
-            "Je suis spécialisé en **droit du travail français**. Je peux vous aider sur :\n\n"
-            "📄 Questions sur vos **documents internes** (droits du salarié, "
-            "conventions collectives, obligations sociales du spectacle)\n"
-            "📅 **Calcul de délais juridiques** (préavis, période d'essai, "
-            "délais de recours...)\n"
-            "📚 **Recherche d'articles de loi** dans le Code du travail (Légifrance)\n"
-            "🔍 **Actualités juridiques** et jurisprudences récentes\n\n"
-            "Comment puis-je vous aider ?"
-        )
+        content="⚖️ Je suis spécialisé en **droit du travail français**, posez-moi une question !"
     ).send()
 
 
