@@ -3,6 +3,7 @@ langchain-classic>=1.0,<2
 langchain-community>=0.4,<1
 langchain-core>=1.2,<2
 langchain-text-splitters>=1.1,<2
+langchain-groq>=0.1,<1
 
 faiss-cpu>=1.13,<2
 
@@ -15,6 +16,7 @@ pymupdf
 
 chainlit>=2.11,<3
 
+python-dotenv>=1.0,<2
 python-dateutil
 requests
 tavily-python
