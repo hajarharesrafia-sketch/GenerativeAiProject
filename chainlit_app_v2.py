@@ -1,5 +1,6 @@
 """
-chainlit_app_v2.py — Interface Chainlit avec Agent juridique (Partie 2)
+chainlit_app_v2.py — Interface Chainlit avec Agent juridique (Partie 4)
+Mémoire conversationnelle par session utilisateur
 """
 
 from __future__ import annotations
@@ -7,11 +8,13 @@ from __future__ import annotations
 import chainlit as cl
 from agent import build_agent
 
-agent_executor = build_agent()
 
 
 @cl.on_chat_start
 async def on_chat_start():
+    agent = build_agent()
+    cl.user_session.set("agent", agent)
+
     await cl.Message(
         content=(
             "⚖️ **Assistant Juridique Intelligent**\n\n"
@@ -29,11 +32,12 @@ async def on_chat_start():
 
 @cl.on_message
 async def on_message(message: cl.Message):
+    agent = cl.user_session.get("agent")
     user_input = message.content.strip()
 
     async with cl.Step(name="Analyse en cours...") as step:
         try:
-            response = agent_executor.invoke({"input": user_input})
+            response = await agent.ainvoke({"input": user_input})  # ✅ async
             answer = response.get("output", "Je n'ai pas pu générer une réponse.")
         except Exception as e:
             answer = f"Une erreur s'est produite : {e}"
