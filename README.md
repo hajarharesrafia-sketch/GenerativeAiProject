@@ -50,7 +50,7 @@ LEGIFRANCE_CLIENT_SECRET=your_client_secret # optionnel
 ## ▶️ Lancement
 
 ```bash
-chainlit run chainlit_app_v4.py -w
+chainlit run chainlit_app.py -w
 ```
 
 L'interface est disponible sur `http://localhost:8000`
