@@ -38,6 +38,4 @@ async def on_message(message: cl.Message):
     route_label = ROUTE_LABELS.get(route, f"*Route : {route}*")
     full_response = f"{route_label}\n\n{response}"
 
-    await cl.Message(
-    content="**Assistant Juridique** — Posez-moi votre question sur le droit du travail français."
-).send()
+    await cl.Message(content=full_response).send()
