@@ -1,5 +1,5 @@
 """
-chainlit_app_v4.py — Interface Chainlit (Partie 3 + 4)
+chainlit_app -version finale — Interface Chainlit (Partie 3 + 4)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Une mémoire distincte est créée par session utilisateur
 grâce à cl.user_session — chaque utilisateur a son propre
