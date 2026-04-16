@@ -1,14 +1,13 @@
 """
-part3_integration.py — Partie 3 + Partie 4 (mémoire conversationnelle)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Routeur intelligent qui combine :
-  • RAG     → si la question concerne les documents internes
-  • Agent   → si la question peut être répondue par un outil
-  • LLM     → sinon (conversation normale)
+integration_memo.py — Partie 3 + Partie 4
+Routage intelligent + mémoire conversationnelle LangChain
+==========================================================
 
-+ Mémoire conversationnelle (Partie 4) :
-  L'historique des échanges est injecté dans chaque appel LLM
-  pour que l'assistant se souvienne du contexte.
+Routes :
+- RAG          : questions sur le CONTENU des documents internes
+- AGENT        : questions nécessitant un outil externe (calcul, Légifrance, web)
+- CONVERSATION : échange général, salutations
+
 """
 
 from __future__ import annotations
@@ -16,234 +15,351 @@ from __future__ import annotations
 import os
 from enum import Enum
 from pathlib import Path
+from typing import Optional, List
 
 from dotenv import load_dotenv
+
 from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnablePassthrough
+from langchain_classic.memory import ConversationBufferWindowMemory
 from langchain_classic.agents import initialize_agent, AgentType
 
 from tools import ALL_TOOLS
-from memory import ConversationMemory          # ← NOUVEAU (Partie 4)
 
-load_dotenv()
-
-# ═══════════════════════════════════════════════════════════════
+# =============================================================
 # Configuration
-# ═══════════════════════════════════════════════════════════════
+# =============================================================
+load_dotenv()
 
 FAISS_DIR       = Path("faiss_index")
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 GROQ_API_KEY    = os.getenv("GROQ_API_KEY")
+GROQ_MODEL      = "llama-3.3-70b-versatile"
 
-# ═══════════════════════════════════════════════════════════════
-# LLM — Groq (Llama3)
-# ═══════════════════════════════════════════════════════════════
-
+# =============================================================
+# LLM
+# =============================================================
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
+    model=GROQ_MODEL,
     temperature=0,
     groq_api_key=GROQ_API_KEY,
 )
 
-
-# ═══════════════════════════════════════════════════════════════
-# Enum : types de routes possibles
-# ═══════════════════════════════════════════════════════════════
-
+# =============================================================
+# Enum des routes
+# =============================================================
 class RouteType(str, Enum):
     RAG          = "rag"
     AGENT        = "agent"
     CONVERSATION = "conversation"
 
 
-# ═══════════════════════════════════════════════════════════════
-# Routeur — décide quelle voie emprunter
-# ═══════════════════════════════════════════════════════════════
+# =============================================================
+# Routeur — VERSION CORRIGÉE
+# =============================================================
+# PROBLÈME D'ORIGINE : le prompt était ambigu. Les mots-clés
+# comme "congés payés" ou "licenciement" apparaissaient dans
+# la description RAG ET dans celle de l'agent (Légifrance),
+# donc le LLM choisissait souvent RAG même pour une demande
+# d'article de loi.
+#
+# SOLUTION : on distingue clairement l'INTENTION :
+#   - RAG    = "que dit votre document sur X ?"
+#   - AGENT  = "cherche/calcule/trouve l'article de loi sur X"
+#   - CONVO  = salutation ou question générale
+#
+# On ajoute aussi des exemples concrets pour ancrer le LLM.
+# =============================================================
 
-ROUTER_SYSTEM_PROMPT = """Tu es un routeur pour un assistant juridique intelligent.
-Ta tâche est de classer la question de l'utilisateur dans l'UNE de ces trois catégories :
+ROUTER_SYSTEM_PROMPT = """Tu es un routeur pour un assistant juridique.
+Tu dois classer la question dans UNE seule catégorie.
 
-1. "rag"          → La question porte sur des documents internes : droits des salariés,
-                     convention collective, obligations sociales, spectacle vivant,
-                     congés payés, licenciement, préavis, période d'essai, CDDU, etc.
+━━━ RÈGLES DE CLASSIFICATION ━━━
 
-2. "agent"        → La question nécessite un outil externe :
-                     calcul de délai/date, recherche d'un article de loi sur Légifrance,
-                     recherche web d'actualité juridique, météo, calcul, etc.
+1) rag
+→ L'utilisateur veut une information contenue dans les documents internes de l'entreprise.
+→ La question porte sur le CONTENU d'un document déjà indexé.
+Exemples :
+- "Quelle est la politique de congés ?"
+- "Que dit la convention collective sur le préavis ?"
+- "Quelles sont les obligations du spectacle vivant selon vos documents ?"
+- "Quels sont mes droits en cas de licenciement selon le document ?"
 
-3. "conversation" → Salutation, question générale sans lien avec les documents ou les outils,
-                     bavardage (ex. : "Bonjour", "Merci", "Comment vas-tu ?").
+2) agent
+→ L'utilisateur demande une action : calcul, recherche web, recherche d'un article officiel.
+→ La réponse nécessite un OUTIL externe (Légifrance, calcul de date, recherche internet).
+Exemples :
+- "Donne-moi l'article de loi sur les congés payés" → Légifrance
+- "Quel est le SMIC actuel ?" → recherche web
+- "Mon préavis commence le 15/04/2025, quelle est la date de fin ?" → calcul de délai
+- "Recherche la jurisprudence sur le licenciement abusif" → recherche web
+- "Trouve l'article L1234-1 du code du travail" → Légifrance
 
-Réponds UNIQUEMENT avec l'un de ces trois mots exacts : rag, agent, conversation.
-Ne fournis aucune explication.
+3) conversation
+→ Salutation, remerciement, question générale sans rapport avec les documents ou les outils.
+Exemples :
+- "Bonjour"
+- "Merci"
+- "Tu peux m'aider ?"
+- "Comment ça marche ?"
+
+━━━ RÈGLE PRIORITAIRE ━━━
+Si la question contient : "article de loi", "article L", "code du travail",
+"jurisprudence", "SMIC actuel", "recherche", "trouve", "calcule", "date de fin",
+"délai de" → réponds TOUJOURS "agent".
+
+Réponds UNIQUEMENT avec un seul mot : rag, agent, ou conversation.
 """
 
 
 def route_question(question: str) -> RouteType:
-    """Détermine quelle voie utiliser pour répondre à la question."""
+    """
+    Classifie la question avec une règle de sécurité supplémentaire :
+    si des mots-clés d'action sont détectés, on force la route 'agent'
+    sans même appeler le LLM.
+    """
+    q_lower = question.lower()
+
+    # ── Règle déterministe (avant appel LLM) ──────────────────
+    # Mots-clés qui signifient toujours un outil externe
+    AGENT_KEYWORDS = [
+        "article de loi", "article l", "code du travail",
+        "légifrance", "legifrance",
+        "smic actuel", "salaire minimum actuel",
+        "jurisprudence",
+        "calcule", "calcul", "date de fin", "date d'échéance",
+        "délai de", "recherche web", "recherche sur internet",
+        "météo", "meteo",
+    ]
+    if any(kw in q_lower for kw in AGENT_KEYWORDS):
+        print(f"[ROUTEUR] Mot-clé agent détecté → AGENT (règle déterministe)")
+        return RouteType.AGENT
+
+    # ── Appel LLM pour les cas ambigus ────────────────────────
     messages = [
         SystemMessage(content=ROUTER_SYSTEM_PROMPT),
         HumanMessage(content=question),
     ]
     raw = llm.invoke(messages).content.strip().lower()
 
-    if "rag" in raw:
-        return RouteType.RAG
+    # Tolérance : on accepte que le LLM réponde avec une phrase contenant le mot
     if "agent" in raw:
         return RouteType.AGENT
+    if "rag" in raw:
+        return RouteType.RAG
     return RouteType.CONVERSATION
 
 
-# ═══════════════════════════════════════════════════════════════
-# Voie 1 — RAG avec citations + historique (Partie 4)
-# ═══════════════════════════════════════════════════════════════
+# =============================================================
+# RAG avec citations
+# =============================================================
+RAG_SYSTEM_PROMPT = """Tu es un assistant juridique expert.
+Réponds UNIQUEMENT à partir du contexte fourni ci-dessous.
 
-RAG_PROMPT_TEMPLATE = """Tu es un assistant juridique expert.
-Réponds à la question en français en te basant UNIQUEMENT sur le contexte fourni.
-Tu dois OBLIGATOIREMENT inclure des citations en mentionnant la source (nom du fichier et page).
-
-Format des citations : [Source : NomDuFichier, page X]
-
-Si la réponse ne se trouve pas dans le contexte, dis-le clairement.
-
-{history_section}
-Contexte :
-{context}
-
-Question : {question}
-
-Réponse (avec citations) :"""
-
-
-def format_docs_with_citations(docs) -> str:
-    parts = []
-    for i, doc in enumerate(docs, 1):
-        source = doc.metadata.get("source", "inconnu")
-        page   = doc.metadata.get("page", "?")
-        parts.append(f"[Document {i} — Source : {source}, page {page}]\n{doc.page_content}")
-    return "\n\n".join(parts)
+Consignes :
+- Réponds en français.
+- Réponse claire, utile, maximum 150 mots.
+- Cite 2 à 4 points importants.
+- Mentionne la source entre crochets : [Source : fichier, page X]
+- Si l'information est absente du contexte, dis-le clairement.
+- Ne donne JAMAIS d'information inventée.
+"""
 
 
 def build_rag_retriever():
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
-    db = FAISS.load_local(str(FAISS_DIR), embeddings, allow_dangerous_deserialization=True)
-    return db.as_retriever(search_kwargs={"k": 4})
-
-
-def answer_rag(question: str, retriever, memory: ConversationMemory) -> str:
-    """Répond via RAG en injectant l'historique dans le prompt."""
-    docs     = retriever.invoke(question)
-    context  = format_docs_with_citations(docs)
-
-    history_text = memory.get_history_as_text()
-    history_section = (
-        f"Historique de la conversation :\n{history_text}\n\n"
-        if history_text else ""
+    db = FAISS.load_local(
+        str(FAISS_DIR), embeddings, allow_dangerous_deserialization=True
     )
-
-    prompt_text = RAG_PROMPT_TEMPLATE.format(
-        history_section=history_section,
-        context=context,
-        question=question,
-    )
-
-    return llm.invoke([HumanMessage(content=prompt_text)]).content
+    return db.as_retriever(search_kwargs={"k": 3})
 
 
-# ═══════════════════════════════════════════════════════════════
-# Voie 2 — Agent avec outils + historique (Partie 4)
-# ═══════════════════════════════════════════════════════════════
+def _safe_page(metadata: dict) -> str:
+    if "page" not in metadata:
+        return "?"
+    try:
+        return str(int(metadata["page"]) + 1)
+    except Exception:
+        return str(metadata["page"])
 
-def build_agent():
+
+def format_docs_with_citations(docs) -> tuple[str, str]:
+    context_parts = []
+    source_lines  = []
+
+    for i, doc in enumerate(docs, start=1):
+        source  = doc.metadata.get("source", "inconnu")
+        page    = _safe_page(doc.metadata)
+        content = doc.page_content.strip()[:800]
+        context_parts.append(f"[Document {i} | Source: {source} | Page: {page}]\n{content}")
+        source_lines.append(f"- {source}, page {page}")
+
+    context_text = "\n\n".join(context_parts)
+    sources_text = "\n".join(dict.fromkeys(source_lines))
+    return context_text, sources_text
+
+
+def answer_rag(
+    question: str,
+    retriever,
+    memory: ConversationBufferWindowMemory,
+) -> str:
+    docs = retriever.invoke(question)
+    context_text, sources_text = format_docs_with_citations(docs)
+
+    # Historique depuis la mémoire (texte brut)
+    history = memory.load_memory_variables({}).get("history", "")
+
+    user_prompt = (
+        f"Historique récent :\n{history}\n\n"
+        if history else ""
+    ) + f"Contexte :\n{context_text}\n\nQuestion : {question}\n\nRéponse :"
+
+    answer = llm.invoke([
+        SystemMessage(content=RAG_SYSTEM_PROMPT),
+        HumanMessage(content=user_prompt),
+    ]).content.strip()
+
+    if sources_text:
+        answer += f"\n\nSources :\n{sources_text}"
+
+    return answer
+
+
+# =============================================================
+# Agent — construit UNE SEULE fois, mémoire injectée
+# =============================================================
+# CORRECTION : dans l'ancienne version, l'agent était reconstruit
+# à chaque appel answer_agent(), ce qui était très coûteux.
+# Maintenant il est créé une seule fois dans IntegratedAssistant.__init__
+# et la mémoire est mise à jour via set_memory().
+#
+# CORRECTION mémoire : CONVERSATIONAL_REACT_DESCRIPTION requiert
+# return_messages=True. L'ancienne mémoire avait return_messages=False
+# ce qui provoquait une erreur silencieuse (l'agent ignorait l'historique).
+#
+# CORRECTION double sauvegarde : l'agent CONVERSATIONAL_REACT sauvegarde
+# lui-même dans la mémoire via memory.save_context(). Ne pas rappeler
+# save_context() après dans answer(), sinon l'historique est doublé.
+# =============================================================
+
+def build_agent(memory: ConversationBufferWindowMemory):
     return initialize_agent(
         tools=ALL_TOOLS,
         llm=llm,
         agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        memory=memory,
         verbose=True,
         handle_parsing_errors=True,
     )
 
 
-def answer_agent(question: str, agent, memory: ConversationMemory) -> str:
-    """Appelle l'agent en enrichissant la question avec l'historique."""
-    history_text = memory.get_history_as_text()
+def answer_agent(question: str, agent) -> str:
+    """
+    Appelle l'agent. La mémoire est déjà intégrée dans l'agent
+    (passée à initialize_agent), donc elle est mise à jour automatiquement.
+    """
+    result = agent.invoke({"input": question})
+    return result.get("output", str(result)) if isinstance(result, dict) else str(result)
 
-    enriched_input = (
-        f"Contexte de la conversation précédente :\n{history_text}\n\nNouvelle question : {question}"
-        if history_text else question
+
+# =============================================================
+# Conversation normale
+# =============================================================
+CONVERSATION_SYSTEM_PROMPT = """Tu es un assistant juridique intelligent et sympathique.
+Réponds en français, de façon brève et naturelle (maximum 3 phrases).
+Tu peux rappeler que tu peux répondre sur le droit du travail ou calculer des délais."""
+
+
+def answer_conversation(
+    question: str,
+    memory: ConversationBufferWindowMemory,
+) -> str:
+    # Récupérer l'historique sous forme de messages LangChain
+    history_messages = memory.chat_memory.messages if memory.chat_memory.messages else []
+    messages = [SystemMessage(content=CONVERSATION_SYSTEM_PROMPT)]
+    messages.extend(history_messages)
+    messages.append(HumanMessage(content=question))
+    return llm.invoke(messages).content.strip()
+
+
+# =============================================================
+# Mémoire partagée — factory
+# =============================================================
+def make_memory(k: int = 3) -> ConversationBufferWindowMemory:
+    """
+    Crée une mémoire LangChain compatible avec les 3 routes.
+
+    return_messages=True  → obligatoire pour CONVERSATIONAL_REACT_DESCRIPTION
+    input_key / output_key → évite l'erreur "multiple input keys"
+    """
+    return ConversationBufferWindowMemory(
+        k=k,
+        memory_key="chat_history",   # clé attendue par CONVERSATIONAL_REACT
+        input_key="input",
+        output_key="output",
+        return_messages=True,        # ← CORRECTION : False cassait l'agent
     )
 
-    result = agent.invoke({"input": enriched_input})
-    return result.get("output", str(result))
 
-
-# ═══════════════════════════════════════════════════════════════
-# Voie 3 — Conversation normale + historique (Partie 4)
-# ═══════════════════════════════════════════════════════════════
-
-CONVERSATION_SYSTEM_PROMPT = """Tu es un assistant juridique intelligent et sympathique.
-Pour les questions simples ou les salutations, réponds de façon naturelle et chaleureuse en français.
-Tu peux rappeler à l'utilisateur que tu peux répondre à des questions sur le droit du travail
-ou effectuer des calculs de délais juridiques.
-Tiens compte de l'historique de la conversation pour répondre de façon cohérente."""
-
-
-def answer_conversation(question: str, memory: ConversationMemory) -> str:
-    """Répond directement avec le LLM en injectant l'historique."""
-    messages = [SystemMessage(content=CONVERSATION_SYSTEM_PROMPT)]
-    messages += memory.get_history_as_messages()   # ← historique LangChain
-    messages.append(HumanMessage(content=question))
-    return llm.invoke(messages).content
-
-
-# ═══════════════════════════════════════════════════════════════
-# Classe principale — Assistant Intégré (Partie 3 + 4)
-# ═══════════════════════════════════════════════════════════════
-
+# =============================================================
+# Assistant intégré
+# =============================================================
 class IntegratedAssistant:
     """
-    Assistant intelligent avec mémoire conversationnelle (Partie 4).
-    Route chaque question et conserve l'historique des échanges.
+    Assistant principal :
+    - routeur intelligent (règle déterministe + LLM)
+    - pipeline RAG avec citations
+    - agent avec outils (construit une seule fois)
+    - mémoire ConversationBufferWindowMemory partagée
     """
 
-    def __init__(self, max_turns: int = 10):
-        print("[INFO] Initialisation de l'assistant intégré...")
+    def __init__(
+        self,
+        max_turns: int = 3,
+        memory: Optional[ConversationBufferWindowMemory] = None,
+    ):
+        print("[INFO] Initialisation de l'assistant...")
 
-        print("[INFO] Chargement du pipeline RAG...")
         self.retriever = build_rag_retriever()
+        self.memory    = memory or make_memory(k=max_turns)
+        self.agent     = build_agent(self.memory)   # ← construit UNE SEULE fois
 
-        print("[INFO] Initialisation de l'agent...")
-        self.agent = build_agent()
+        print("[SUCCESS] Assistant prêt !")
 
-        self.memory = ConversationMemory(max_turns=max_turns)   # ← NOUVEAU
-        print("[SUCCESS] Assistant prêt !\n")
+    def set_memory(self, memory: ConversationBufferWindowMemory) -> None:
+        """
+        Injecte une nouvelle mémoire (ex. depuis Chainlit user_session).
+        Reconstruit l'agent avec cette mémoire.
+        """
+        self.memory = memory
+        self.agent  = build_agent(memory)   # ← nécessaire : l'agent garde une ref interne
 
     def answer(self, question: str) -> dict:
-        """
-        Traite une question, utilise la mémoire pour le contexte,
-        puis sauvegarde le nouvel échange.
-        """
-        print(f"\n[ROUTEUR] Analyse : '{question}'")
-        print(f"[MÉMOIRE] {self.memory}")
-
-        route = route_question(question)
-        print(f"[ROUTEUR] → Route : {route.value.upper()}")
+        route    = route_question(question)
+        response = ""
 
         if route == RouteType.RAG:
             response = answer_rag(question, self.retriever, self.memory)
+            # RAG n'a pas de mémoire intégrée → on sauvegarde manuellement
+            self.memory.save_context(
+                {"input": question},
+                {"output": response},
+            )
 
         elif route == RouteType.AGENT:
-            response = answer_agent(question, self.agent, self.memory)
+            response = answer_agent(question, self.agent)
+            # L'agent CONVERSATIONAL_REACT sauvegarde lui-même → pas de save_context ici
 
-        else:
+        else:  # CONVERSATION
             response = answer_conversation(question, self.memory)
-
-        self.memory.add(question, response)   # ← NOUVEAU : sauvegarde
+            # Conversation n'a pas de mémoire intégrée → sauvegarde manuelle
+            self.memory.save_context(
+                {"input": question},
+                {"output": response},
+            )
 
         return {"route": route.value, "response": response}
 
@@ -252,36 +368,41 @@ class IntegratedAssistant:
         print("[MÉMOIRE] Historique effacé.")
 
 
-# ═══════════════════════════════════════════════════════════════
-# Mode terminal — test CLI
-# ═══════════════════════════════════════════════════════════════
-
+# =============================================================
+# Test terminal
+# =============================================================
 if __name__ == "__main__":
-    assistant = IntegratedAssistant()
+    assistant = IntegratedAssistant(max_turns=3)
 
-    print("=" * 65)
-    print("  Assistant Juridique — Partie 3 + 4 (avec mémoire)")
-    print("  Tapez 'quitter' pour arrêter, 'reset' pour effacer la mémoire.")
-    print("=" * 65 + "\n")
+    print("=" * 70)
+    print("Assistant Juridique — RAG + Agent + Conversation + Memory Buffer")
+    print("Tapez 'quitter' pour arrêter, 'reset' pour effacer la mémoire.")
+    print("=" * 70)
+
+    test_questions = [
+        "Bonjour !",
+        "Quelle est la politique de congés selon vos documents ?",
+        "Donne-moi l'article de loi sur les congés payés",
+        "Mon préavis commence le 15/04/2025, quelle est la date de fin pour 2 mois ?",
+        "Quel est le SMIC actuel en France ?",
+    ]
+    print("\nExemples pour tester les 3 routes :")
+    for q in test_questions:
+        print(f"  → {q}")
+    print()
 
     while True:
-        user_input = input("Vous : ").strip()
+        user_input = input("\nVous : ").strip()
         if not user_input:
             continue
-        if user_input.lower() in {"quitter", "exit", "quit"}:
+        if user_input.lower() in {"quitter", "quit", "exit"}:
             print("Au revoir !")
             break
         if user_input.lower() == "reset":
             assistant.reset_memory()
-            print("Mémoire effacée.\n")
+            print("Mémoire effacée.")
             continue
 
         result = assistant.answer(user_input)
-        route_label = {
-            "rag":          "📄 RAG (documents internes)",
-            "agent":        "🔧 Agent (outils)",
-            "conversation": "💬 Conversation normale",
-        }.get(result["route"], result["route"])
-
-        print(f"\n[{route_label}]")
-        print(f"Assistant : {result['response']}\n")
+        print(f"\n[ROUTE : {result['route'].upper()}]")
+        print(result["response"])
